@@ -1,0 +1,25 @@
+services:
+  api:
+    resources:
+      requests:
+        cpu: 1m
+        memory: 64Mi
+      limits:
+        cpu: 1m
+        memory: 128Mi
+
+limitRange:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 200m
+        memory: 128Mi
+      min:
+        cpu: 1m
+        memory: 16Mi
+      max:
+        cpu: "1"
+        memory: 512Mi

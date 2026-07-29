@@ -1,0 +1,6 @@
+apiVersion: v2
+name: microservices
+description: API Gateway, Books and Movies Go services with CPU/memory governance
+type: application
+version: 0.1.0
+appVersion: "1.0"
