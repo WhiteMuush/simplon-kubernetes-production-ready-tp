@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: books
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: books
+  template:
+    metadata:
+      labels:
+        app: books
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: books
+              topologyKey: zone
+      topologySpreadConstraints:
+         - maxSkew: 1
+           topologyKey: kubernetes.io/hostname   # ← on cible le nœud physique/logique
+           whenUnsatisfiable: ScheduleAnyway     # ← OPTIONNEL : si impossible, on schedule quand même
+           labelSelector:                        # ← on cible TOUTES les apps
+            matchExpressions:
+              - key: app
+                operator: Exists                # ← tous les pods qui ont une label "app"
+      containers:
+        - name: books
+          image: microservices:1.0
+          command: ["./books"]
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          ports:
+            - containerPort: 8080

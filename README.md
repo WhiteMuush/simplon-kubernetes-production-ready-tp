@@ -1,93 +1,136 @@
-# simplon-kubernetes-production-ready-tp
+# <img src="https://cdn.simpleicons.org/kubernetes" height="28" alt="Kubernetes" align="center"/> HA multi-zone Go microservices on Kubernetes <img src="https://cdn.simpleicons.org/go" height="28" alt="Go" align="center"/>
 
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-Kind-326CE5?logo=kubernetes&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-distroless-2496ED?logo=docker&logoColor=white)
 
+Three Go microservices (API Gateway, Books, Movies) deployed in strict High Availability on a Kind cluster of 9 workers spread over 3 simulated zones.
 
-## Getting started
+> Brief of the previous iteration (single-zone HA): [docs/CONSIGNES.md](docs/CONSIGNES.md)
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Collaborators
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+| | Name | GitLab |
+|---|---|---|
+| <img src="https://gitlab.com/uploads/-/system/user/avatar/25079794/avatar.png?width=48" width="48" height="48" alt="Melvin PETIT avatar"/> | Melvin PETIT | [@WhiteMuush](https://gitlab.com/WhiteMuush) |
+| <img src="https://secure.gravatar.com/avatar/517f74b6241ee925a3bfa3bfcf2febedc774773db90295c061b2cba360a173ad?s=48&d=identicon" width="48" height="48" alt="Leith Zniber avatar"/> | Leith Zniber | [@Bambstk](https://gitlab.com/Bambstk) |
 
-## Add your files
+## Project context
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Deploy the app in HA on a local Kind cluster: 9 workers (3 per zone) across 3 AZ (`francecentral-1`, `-2`, `-3`), zones simulated with node labels.
+
+- 3 replicas per service, mandatorily spread over different zones (Required anti-affinity or strict topologySpreadConstraints), plus an optional constraint favouring "empty" nodes.
+- API Gateway reachable from the host.
+- StartupProbe, ReadinessProbe, LivenessProbe, so traffic only reaches healthy and ready pods.
+- Rolling Update with no interruption, checked with `kubectl rollout` and a continuous load test.
+- Chaos: drain a node, then a whole zone. Siege must show a low error rate (< 1-2%).
+- Deliverable: live demo of the 3 load tests (normal, node down, zone down) plus an analysis of the failure impact and of the orchestrator's role.
+
+Bonus: Traffic Distribution Policy, PodDisruptionBudget. Neither is implemented yet, and the manifests are raw YAML, not Helm/Kustomize.
+
+## Architecture
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/WhiteMuush/simplon-kubernetes-production-ready-tp.git
-git branch -M main
-git push -uf origin main
+                         HOST  (http://localhost:8080/data)
+                              │
+                              ▼  LoadBalancer (cloud-provider-kind)
+                              │
+                   FRANCE (Kind cluster "francecentral")
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+ zone francecentral-1   zone francecentral-2   zone francecentral-3
+        │                     │                     │
+  control-plane-1        control-plane-2        control-plane-3    (tainted, no app pods)
+        │                     │                     │
+   ┌────┼────┐            ┌────┼────┐            ┌────┼────┐
+ worker worker worker   worker worker worker   worker worker worker
+   │      │      │         │      │      │         │      │      │
+  pod    pod    pod       pod    pod    pod       pod    pod    pod
+ (api) (books)(movies)   (api) (books)(movies)   (api) (books)(movies)
 ```
 
-## Integrate with your tools
+`podAntiAffinity` (required, `topologyKey: zone`) forces exactly one pod per app per zone; `topologySpreadConstraints` (soft, `topologyKey: kubernetes.io/hostname`) then spreads those 9 pods one per worker instead of stacking them. `api` is the only one reachable from outside (LoadBalancer); `books` and `movies` stay ClusterIP, called by `api` over Service DNS.
 
-* [Set up project integrations](https://gitlab.com/WhiteMuush/simplon-kubernetes-production-ready-tp/-/settings/integrations)
+One Docker image, three binaries, the container `command` picks the app. The API reaches the others by Service DNS name, injected as `BOOKS_API_HOST=books` and `MOVIES_API_HOST=movies` (port 80, so no suffix).
 
-## Collaborate with your team
+| App | Endpoint | Exposure |
+|---|---|---|
+| api | `GET /data` | LoadBalancer, aggregates the two others |
+| books | `GET /books` | ClusterIP |
+| movies | `GET /movies` | ClusterIP |
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+The API serves `/data`, not `/`.
 
-## Test and Deploy
+## HA config
 
-Use the built-in continuous integration in GitLab.
+Every Deployment carries the same three blocks:
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+- **`podAntiAffinity` required on `topologyKey: zone`**: two pods of the same app can never share a zone. With 3 replicas and 3 zones, the only valid placement is one per zone, and a pod that cannot satisfy it stays `Pending` rather than land in the wrong place.
+- **`topologySpreadConstraints` on `kubernetes.io/hostname`, `ScheduleAnyway`, selector `app Exists`**: counts all three apps together to avoid stacking them on one worker while others stay empty. Soft preference, so it never blocks scheduling.
+- **`maxSurge: 0`, `maxUnavailable: 1`**: with `maxSurge: 1` the extra pod would have no free zone and the rollout would deadlock on `Pending`. Deleting first frees a zone, and 2 of 3 replicas keep serving.
 
-***
+Probes are TCP on 8080: startup (`failureThreshold 30`, `period 5s`) covers boot, readiness pulls the pod out of the Service endpoints when it cannot serve, liveness restarts a stuck container.
 
-# Editing this README
+## Requirements
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Docker, [kind](https://kind.sigs.k8s.io/), kubectl, [siege](https://github.com/JoeDog/siege), and cloud-provider-kind for LoadBalancer support:
 
-## Suggestions for a good README
+```bash
+go install sigs.k8s.io/cloud-provider-kind@latest
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+## Deploy
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+docker build -t microservices:1.0 .
+make create-cluster          # cluster francecentral + image load
+make deployments services
+sudo cloud-provider-kind     # keep running in its own terminal
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+Check placement (expected: 9 pods, one per app per zone) then call the API:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+```bash
+make status-cluster
+curl http://localhost:8080/data
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```json
+{"app":"API Gateway","data":{"books":["Book 1","Book 2","Book 3"],"movies":["Movie 1","Movie 2","Movie 3"]}}
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+Cleanup: `make delete-cluster`.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+> **WSL2**: cloud-provider-kind may put the LoadBalancer IP on `lo`, and `localhost:8080` then hangs. Fix with `sudo ip addr del <EXTERNAL-IP>/32 dev lo`, re-run if it comes back.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+## Demo
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Watch pods with `watch -n1 kubectl get pods -o wide` and keep traffic running with `siege -c 10 -t 2M http://localhost:8080/data` during each step below.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+**Rolling update**
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+```bash
+docker build -t microservices:2.0 . && kind load docker-image microservices:2.0 -n francecentral
+kubectl set image deployment/api api=microservices:2.0
+kubectl rollout status deployment/api      # kubectl rollout undo to revert
+```
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+**Chaos**
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```bash
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data --force   # 1 node, then x3 for a zone
+kubectl uncordon <node>
+```
 
-## License
-For open source projects, say how it is licensed.
+Report siege's `Availability`, `Failed transactions` and `Longest transaction` for the three scenarios.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+## Analysis
+
+A single node without replication means availability drops to 0 and stays there. Three replicas on one node change nothing: losing the machine loses all three, replication only pays off once it is spread.
+
+Losing one node per zone costs each app one replica per affected zone, but the two other workers of that zone take them back. Rescheduling takes seconds, readiness keeps traffic off the pods still starting, and errors stay in the low single digits, only from the connections in flight at eviction time.
+
+Losing a whole zone removes one third of the capacity for good: the strict anti-affinity forbids rebuilding the replica elsewhere. That is deliberate. A `preferred` rule would restore 3 running replicas at once, but by putting 2 in the same zone, so the next zone failure would take down two thirds instead of one third. `required` trades replica count for guaranteed spreading, which is the right call when the failure domain is what we defend against.
+
+Kubernetes closes the loop without us: probes detect the sick pods, endpoints stop routing to them, evicted workloads are rescheduled under the placement constraints, and the cluster converges back to the desired state as soon as capacity returns. The orchestrator does not prevent failures, it turns "the machine is down" into "the desired state is temporarily unmet".
