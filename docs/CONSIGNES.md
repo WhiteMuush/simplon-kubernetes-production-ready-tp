@@ -2,57 +2,33 @@
 
 ## Project context
 
-You have deployed your first application on Kubernetes, congratulations! It is even reachable from your machine by typing http://localhost:8080 in your browser's address bar, which means you exposed it correctly to the outside of the cluster, probably with a Service of type LoadBalancer or NodePort.
+### Summary
 
-Today, we need you to help another team that is trying to deploy its microservices application on their Kubernetes cluster.
+You have deployed the microservices application (API Gateway, Books, Movies) on Kubernetes: and it works! You also thought about replicating it 3 times and spreading the pods across several nodes. But for now, our pods do whatever they want. If one of the applications has a problem and its memory grows, no mechanism prevents it from consuming all the memory available on the node (on your PC here). Same for the CPU: we will see that it is a very particular resource, shared between the applications and containers of a same node, so clear constraints must be defined about its usage to avoid a pod cannibalizing our whole infra, and our performance.
 
-They have an API written in Go, which talks to two other services, also written in Go, whose purpose is to fetch information about books and movies. They want the three applications to be deployed on Kubernetes, replicated several times, and the API to be reachable from outside the cluster. The API must be able to talk to the two services through the cluster's internal network. The movies and books services must not be reachable from outside.
+We are now going to get a bit closer to a "Production Ready" application, by focusing on CPU & RAM resource management. The goal is to understand the difference between Requests (guaranteed allocation) and Limits (cut-off threshold), and to apply these concepts to the 3 Go services of our application.
 
-## The API
+You will also have to implement cluster administration mechanisms by setting up a LimitRange to define default and per-namespace constraints, and a ResourceQuota to limit the global consumption of a namespace.
 
-It is a Go application that needs two environment variables to work:
+### Note for KIND
 
-- `BOOKS_API_HOST`
-- `MOVIES_API_HOST`
+On Kind, the metrics-server is disabled by default. To install it, follow this guide: https://gist.github.com/sanketsudake/a089e691286bf2189bfedf295222bd43. Careful, replace version v0.5.0 with a more recent one, such as v0.9.0.
 
-With Docker Compose, we would have put the names of those applications' containers here, but this is not possible on Kubernetes, so we need to find a way to expose them, retrieve their "host", and set it as an environment variable in our API Deployment.
+Or run these commands one after the other:
 
-This kind of API is called an "API Gateway", mainly because its role is to aggregate data from several underlying services.
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml
 
-## The Docker image
-
-If you look at the project's single Dockerfile, you will see that a single image is built for the three applications. So you will need to configure its Pods correctly so they start on the right application each time ("movies", "books" or "api").
-
-Once the image is built, you will need to find a way to make it available in Kubernetes, using the "kind load docker-image" feature.
-
-## HA
-
-The application is meant to be used in production. So it must be deployed in "high availability" mode, meaning distributed and replicated across several worker nodes. No deployment on the control-plane.
-
-## Bonus
-
-- The N replicas of a same application are not deployed on the same worker node (anti-affinity rule)
-- Resources (CPU & Memory) are assigned to the containers (for example 0.1 CPU, 64MB RAM per container/pod/replica/app)
-- Replace the "hardcoded" environment variables in the YAML with a ConfigMap
-
-## Expected response
-
-On a call to http://localhost:8080
-
-```json
-{
-  "app": "API Gateway",
-  "data": {
-    "books": [
-      "Book 1",
-      "Book 2",
-      "Book 3"
-    ],
-    "movies": [
-      "Movie 1",
-      "Movie 2",
-      "Movie 3"
-    ]
-  }
-}
+kubectl patch -n kube-system deployment metrics-server --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
 ```
+
+### Typical schedule
+
+1. **Theory & Concepts (1h)** -> After the morning class, we sit down and read the Kubernetes documentation about resources
+2. **Environment setup (30mn)** -> We (re)create a Kind cluster from scratch, with a single worker node
+3. **Install the "metrics-server" (15mn)** -> Kind does not install it, and it is required to display & manage resources on a Kubernetes cluster
+4. **Resources configuration (1h30)** -> We take our 3 Deployments, and apply resource limits & requests on them
+5. **Test & observe (30mn)** -> Set very low CPU limits (1m?) and observe the "throttling" effect and the high latency
+6. **Cluster administration: LimitRange & ResourceQuota (1h)** -> Apply your austerity policy on resources, set up rationing!
+7. **Test again & observe (30mn)** -> Create new pods, observe their (non) creation, check that what you set up still works (or not)
