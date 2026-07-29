@@ -85,23 +85,139 @@ Cleanup: `make delete-cluster`.
 
 > **WSL2**: cloud-provider-kind may put the LoadBalancer IP on `lo`, and `localhost:8080` then hangs. Fix with `sudo ip addr del <EXTERNAL-IP>/32 dev lo`, re-run if it comes back.
 
+## Results
+
+### 1. Cluster with a single worker
+
+```bash
+kubectl get nodes -o wide
+```
+
+![kubectl get nodes](src/img/Screen01.png)
+
+One control-plane and one worker, both `Ready`. The cluster was cut down to a single
+worker on purpose: with only one node, all the pods land on the same machine, so the
+resource pressure (and the effect of the limits) is actually visible instead of being
+diluted across many nodes.
+
+### 2. The 9 pods, all placed on the worker
+
+```bash
+kubectl get pods -o wide
+```
+
+![kubectl get pods](src/img/Screen02.png)
+
+The three services run 3 replicas each (`api`, `books`, `movies`), all scheduled on
+`francecentral-worker`. Each replica is an independent container with its own
+`requests` and `limits`: a limit applies per container, never to the group.
+
+### 3. Real consumption (metrics-server)
+
+```bash
+make top
+```
+
+![make top](src/img/Screen03.png)
+
+The metrics-server is what makes `kubectl top` work (kind does not ship it). The
+services barely use anything: ~0-1m CPU and 1-2Mi RAM at rest. That gap between the
+real usage and the configured `requests` (50m / 64Mi) is the whole point of measuring
+before choosing values, rather than guessing large numbers "to be safe".
+
+### 4. LimitRange and ResourceQuota in force
+
+```bash
+make quota
+```
+
+![make quota](src/img/Screen04.png)
+
+- **LimitRange** injects a default `request`/`limit` into any container that declares
+  none, and rejects containers asking outside the `min`/`max` bounds.
+- **ResourceQuota** caps the whole namespace. The `Used` vs `Hard` columns match the
+  math exactly: 9 containers give `requests 450m / 576Mi`, `limits 1800m / 1152Mi`,
+  `9` pods, all under budget.
+
+### 5. Throttling experiment (API capped at 1m CPU)
+
+```bash
+make throttle          # cap the API Gateway at 1m CPU
+make siege TIME=30S    # load test through a port-forward
+make throttle-proof    # read the CFS throttling counters on the node
+```
+
+![make throttle + siege start](src/img/Screen05_part01.png)
+
+The API is redeployed with a `1m` CPU limit (1 millicore = 1/1000 of a core), then
+put under siege with 10 concurrent users.
+
+![siege live transactions](src/img/Screen05_part02.png)
+
+Every request still returns `HTTP 200`, but each one takes **1 to 3 seconds** instead
+of a few milliseconds. The container is not dead, it is being slowed down: the kernel
+grants it CPU time only in tiny slices and makes it wait for the next scheduling
+period.
+
+![siege summary + throttling counters](src/img/Screen_part03.png)
+
+The numbers tell the full story:
+
+| Metric | Value | Meaning |
+|---|---|---|
+| Response time | 1842 ms | ~500x slower than the unthrottled ~3 ms |
+| Longest transaction | 4030 ms | one request waited ~40 CPU periods |
+| Transaction rate | 5.25/s | throughput crushed by throttling |
+| Availability | 100% | zero failed request |
+| Throttled periods | 87-95% | 9 CPU cycles out of 10 blocked by the kernel |
+
+**The lesson**: high latency **and** 100% availability together prove that a CPU limit
+*throttles* (a brake) but never *kills*. CPU is compressible. Had this been a memory
+limit being exceeded, we would see `Failed transactions` and pods in
+`CrashLoopBackOff` instead, because memory is not compressible and the only way to
+reclaim it is to OOMKill the container.
+
+Back to normal with `make normal`.
+
+### 6. ResourceQuota rejecting new pods
+
+Scaling a deployment past the namespace ceiling (`pods: 12`) is refused at admission:
+
+```bash
+helm upgrade --install microservices ./chart --reset-values --set services.books.replicaCount=10
+kubectl describe rs -l app=books | grep -i "exceeded quota"
+```
+
+```
+Error creating: pods "books-..." is forbidden: exceeded quota: microservices-quota,
+requested: pods=1, used: pods=12, limited: pods=12
+```
+
+`books` stays stuck (e.g. `3/10`), the extra pods are never created. This is the
+rationing counterpart of throttling: the quota does not kill anything, it prevents the
+creation in the first place.
+
 ## Progress
 
 | Step | Status |
 |---|---|
-| Cluster rebuilt with a single worker node | todo |
-| metrics-server installed and patched | todo |
-| requests & limits on the 3 Deployments | todo |
-| Throttling experiment (CPU limit at `1m`) | todo |
-| LimitRange (defaults + min/max per namespace) | todo |
-| ResourceQuota (namespace ceiling) | todo |
-| Tests after the quota, rejected pods observed | todo |
+| Cluster rebuilt with a single worker node | done |
+| metrics-server installed and patched | done |
+| requests & limits on the 3 Deployments | done |
+| Throttling experiment (CPU limit at `1m`) | done |
+| LimitRange (defaults + min/max per namespace) | done |
+| ResourceQuota (namespace ceiling) | done |
+| Tests after the quota, rejected pods observed | done |
 
-## Notes
+## Environment notes (Bazzite / podman)
 
-Kept as a scratchpad while working through the brief, to be turned into a proper analysis section once the measurements are done.
+This machine runs Bazzite (immutable Fedora), so the tooling lives in Homebrew and the
+container engine is **rootless podman**, not Docker. Two consequences for the commands
+in this README:
 
-- `kind-config.yaml` still describes the 9 worker, 3 zone cluster of the previous iteration. It has to be cut down to one worker so the resource pressure is actually visible.
-- The Deployments in `k8s/` carry no `resources` block yet.
-- Open question: with a `1m` CPU limit, how long does the API Gateway take to answer, and how does that show up in `container_cpu_cfs_throttled_periods_total`.
-- Open question: does a LimitRange default apply to pods created before it exists (expected: no, only to new ones).
+- Every `kind` command needs `export KIND_EXPERIMENTAL_PROVIDER=podman`.
+- `kind load docker-image` is broken with podman here; the image is loaded through an
+  archive instead (`podman save` + `kind load image-archive`).
+- The `api` LoadBalancer stays `EXTERNAL-IP <pending>` (no cloud-provider-kind), so
+  load tests go through `kubectl port-forward` via `make siege` rather than
+  `localhost:8080`.
