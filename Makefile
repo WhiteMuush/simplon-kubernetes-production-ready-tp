@@ -76,28 +76,51 @@ restore: ## Put every node back in service and rebalance the pods
 	@kubectl uncordon -l zone
 	@kubectl rollout restart deployment/api deployment/books deployment/movies
 
-##@ Workloads
+##@ Workloads (Helm)
 
-.PHONY: deployments
-deployments: ## Apply the api, books and movies deployments
-	@echo "----------------api deployment---------------"
-	@kubectl apply -f ./k8s/api/api-deployment.yaml
-	@echo "---------------------------------------------"
-	@echo "---------------books deployment--------------"
-	@kubectl apply -f ./k8s/books/books-deployment.yaml
-	@echo "---------------------------------------------"
-	@echo "---------------movies deployment-------------"
-	@kubectl apply -f ./k8s/movies/movies-deployment.yaml
-	@echo "---------------------------------------------"
+CHART:=./chart
+RELEASE:=microservices
 
-.PHONY: services
-services: ## Apply the api, books and movies services
-	@echo "-----------------api service-----------------"
-	@kubectl apply -f ./k8s/api/api-service.yaml
-	@echo "---------------------------------------------"
-	@echo "----------------books service----------------"
-	@kubectl apply -f ./k8s/books/books-service.yaml
-	@echo "---------------------------------------------"
-	@echo "----------------movies service---------------"
-	@kubectl apply -f ./k8s/movies/movies-service.yaml
-	@echo "---------------------------------------------"
+.PHONY: lint
+lint: ## Lint the chart and render it without touching the cluster
+	@helm lint $(CHART)
+	@helm template $(RELEASE) $(CHART) > /dev/null && echo "template OK"
+
+.PHONY: install
+install: ## Install or upgrade the release with the default values
+	@helm upgrade --install $(RELEASE) $(CHART) --atomic --timeout 3m
+
+.PHONY: throttle
+throttle: ## Re-deploy with the API Gateway capped at 1m CPU
+	@helm upgrade --install $(RELEASE) $(CHART) -f $(CHART)/values-throttle.yaml --atomic --timeout 3m
+
+.PHONY: uninstall
+uninstall: ## Remove the release
+	@helm uninstall $(RELEASE)
+
+.PHONY: diff
+diff: ## Show what an upgrade would change (needs the helm-diff plugin)
+	@helm diff upgrade $(RELEASE) $(CHART)
+
+##@ Resources
+
+.PHONY: metrics-server
+metrics-server: ## Install the metrics-server and patch it for kind
+	@kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml
+	@kubectl patch -n kube-system deployment metrics-server --type=json \
+		-p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+	@kubectl rollout status -n kube-system deployment/metrics-server
+
+.PHONY: top
+top: ## Show live CPU and memory usage
+	@echo "--------------------NODES--------------------"
+	@kubectl top nodes
+	@echo "--------------------PODS---------------------"
+	@kubectl top pods
+
+.PHONY: quota
+quota: ## Show what the LimitRange and the ResourceQuota enforce
+	@echo "-----------------LIMITRANGE------------------"
+	@kubectl describe limitrange microservices-limits
+	@echo "----------------RESOURCEQUOTA----------------"
+	@kubectl describe resourcequota microservices-quota
