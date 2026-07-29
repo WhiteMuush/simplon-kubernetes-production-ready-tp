@@ -7,11 +7,9 @@ containerPort: 8080
 
 defaultResources:
   requests:
-    cpu: 50m
-    memory: 64Mi
+    memory: 1Gi
   limits:
-    cpu: 200m
-    memory: 128Mi
+    memory: 2Gi
 
 services:
   api:
@@ -43,25 +41,14 @@ limitRange:
   name: microservices-limits
   limits:
     - type: Container
-      defaultRequest:
-        cpu: 50m
-        memory: 64Mi
-      default:
-        cpu: 200m
-        memory: 128Mi
-      min:
-        cpu: 10m
-        memory: 16Mi
-      max:
-        cpu: "1"
-        memory: 512Mi
 
 resourceQuota:
   enabled: true
   name: microservices-quota
   hard:
-    requests.cpu: "1"
     requests.memory: 1Gi
-    limits.cpu: "2"
+  # Si le pods va au dessus de 2gi, il est kill automatiquement
     limits.memory: 2Gi
+  # Compte 12 pods au max,
+  # dû au rolling update qui pourrait rajouter un pod pour chaque services.
     pods: "12"
