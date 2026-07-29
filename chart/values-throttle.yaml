@@ -1,25 +1,31 @@
+# Override throttling (etape 5) : API bridee a 1m CPU. helm upgrade -f values-throttle.yaml.
+
 services:
   api:
     resources:
       requests:
-        cpu: 1m
+        cpu: 1m        # = limit (une limit doit etre >= sa request)
         memory: 64Mi
       limits:
-        cpu: 1m
+        cpu: 1m        # plafond qui declenche le throttling
         memory: 128Mi
 
+# LimitRange reecrit en entier (helm remplace les listes, pas de merge).
+# Seul changement vs values.yaml : min.cpu 10m -> 1m, sinon la request a 1m est refusee.
 limitRange:
+  enabled: true
+  name: microservices-limits
   limits:
     - type: Container
-      defaultRequest:
-        cpu: 50m
-        memory: 64Mi
       default:
         cpu: 200m
         memory: 128Mi
-      min:
-        cpu: 1m
-        memory: 16Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
       max:
         cpu: "1"
         memory: 512Mi
+      min:
+        cpu: 1m
+        memory: 32Mi

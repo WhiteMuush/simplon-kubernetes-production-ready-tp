@@ -49,6 +49,13 @@ status-cluster: ## Show nodes, pods, services and deployments
 
 SIEGE:=siege --concurrent=10 --benchmark http://localhost:8080/data
 
+.PHONY: siege
+siege: ## Load test via port-forward (no LoadBalancer needed). Usage: make siege TIME=30S
+	@kubectl port-forward svc/api 18080:8080 >/dev/null 2>&1 & PF=$$!; \
+	sleep 3; \
+	siege --concurrent=10 --benchmark --time=$(or $(TIME),30S) http://localhost:18080/data; \
+	kill $$PF 2>/dev/null
+
 .PHONY: test1
 test1: ## Load test alone, 100% availability expected
 	$(SIEGE) --time=10S
@@ -88,11 +95,15 @@ lint: ## Lint the chart and render it without touching the cluster
 
 .PHONY: install
 install: ## Install or upgrade the release with the default values
-	@helm upgrade --install $(RELEASE) $(CHART) --atomic --timeout 3m
+	@helm upgrade --install $(RELEASE) $(CHART) --reset-values --rollback-on-failure --timeout 3m
 
 .PHONY: throttle
 throttle: ## Re-deploy with the API Gateway capped at 1m CPU
-	@helm upgrade --install $(RELEASE) $(CHART) -f $(CHART)/values-throttle.yaml --atomic --timeout 3m
+	@helm upgrade --install $(RELEASE) $(CHART) --reset-values -f $(CHART)/values-throttle.yaml --rollback-on-failure --timeout 3m
+
+.PHONY: normal
+normal: ## Undo the throttle, back to default values (install does the same)
+	@helm upgrade --install $(RELEASE) $(CHART) --reset-values --rollback-on-failure --timeout 3m
 
 .PHONY: uninstall
 uninstall: ## Remove the release
@@ -124,3 +135,17 @@ quota: ## Show what the LimitRange and the ResourceQuota enforce
 	@kubectl describe limitrange microservices-limits
 	@echo "----------------RESOURCEQUOTA----------------"
 	@kubectl describe resourcequota microservices-quota
+
+WORKER:=francecentral-worker
+
+.PHONY: throttle-proof
+throttle-proof: ## Read the CFS throttling counters of the 1m-capped API on the node
+	@podman exec $(WORKER) bash -c 'for m in $$(find /sys/fs/cgroup/kubelet.slice -name cpu.max 2>/dev/null); do \
+		[ "$$(cat $$m)" = "1000 100000" ] || continue; d=$$(dirname $$m); \
+		case "$$d" in *cri-containerd*scope) \
+			id=$$(basename $$d | sed "s/cri-containerd-//;s/.scope//" | cut -c1-12); \
+			np=$$(grep nr_periods $$d/cpu.stat | awk "{print \$$2}"); \
+			nt=$$(grep nr_throttled $$d/cpu.stat | awk "{print \$$2}"); \
+			pct=0; [ "$${np:-0}" -gt 0 ] && pct=$$((nt*100/np)); \
+			echo "$$id : $$nt/$$np periods throttled ($${pct}%)";; \
+		esac; done'
