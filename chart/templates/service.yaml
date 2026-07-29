@@ -1,0 +1,17 @@
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "microservices.labels" (dict "root" $ "name" $name) | nindent 4 }}
+spec:
+  type: {{ $svc.service.type }}
+  selector:
+    {{- include "microservices.selectorLabels" (dict "root" $ "name" $name) | nindent 4 }}
+  ports:
+    - protocol: TCP
+      port: {{ $svc.service.port }}
+      targetPort: http
+{{- end }}

@@ -1,0 +1,16 @@
+Release {{ .Release.Name }} deployed in namespace {{ .Release.Namespace }}.
+
+Services:
+{{- range $name, $svc := .Values.services }}
+  - {{ $name }} ({{ $svc.service.type }}, port {{ $svc.service.port }}, {{ $svc.replicaCount }} replicas)
+{{- end }}
+
+Check what the cluster actually granted:
+
+  kubectl describe limitrange {{ .Values.limitRange.name }}
+  kubectl describe resourcequota {{ .Values.resourceQuota.name }}
+  kubectl top pods
+
+Call the API (needs cloud-provider-kind running):
+
+  curl http://localhost:{{ .Values.services.api.service.port }}/data
