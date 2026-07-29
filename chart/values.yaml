@@ -5,11 +5,15 @@ image:
 
 containerPort: 8080
 
+# Fallback pour tout service sans bloc "resources" (voir deployment.yaml).
+# Valeurs modestes : les services Go consomment ~30Mo au repos. A recalibrer via kubectl top.
 defaultResources:
   requests:
-    memory: 1Gi
+    cpu: 50m
+    memory: 64Mi
   limits:
-    memory: 2Gi
+    cpu: 200m
+    memory: 128Mi
 
 services:
   api:
@@ -41,14 +45,29 @@ limitRange:
   name: microservices-limits
   limits:
     - type: Container
+      default:          # limit injectee si le conteneur n'en declare pas
+        cpu: 200m
+        memory: 128Mi
+      defaultRequest:   # request injectee si le conteneur n'en declare pas
+        cpu: 50m
+        memory: 64Mi
+      max:              # request/limit au-dessus = pod refuse
+        cpu: "1"
+        memory: 512Mi
+      min:
+        cpu: 10m
+        memory: 32Mi
 
+# Plafond global du namespace. Refuse la CREATION si la somme depasse (ne tue rien au runtime).
+# Budget cale pour laisser tourner les 9 conteneurs avec de la marge.
 resourceQuota:
   enabled: true
   name: microservices-quota
   hard:
+    # Declarer requests.cpu ici oblige chaque conteneur a declarer sa request
+    # (couvert par defaultResources + le LimitRange).
+    requests.cpu: "1"
     requests.memory: 1Gi
-  # Si le pods va au dessus de 2gi, il est kill automatiquement
+    limits.cpu: "3"
     limits.memory: 2Gi
-  # Compte 12 pods au max,
-  # dû au rolling update qui pourrait rajouter un pod pour chaque services.
-    pods: "12"
+    pods: "12"        # 9 en regime normal + surplus rolling update (maxSurge 25% x3 Deployments)
